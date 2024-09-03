@@ -1,0 +1,123 @@
+apiVersion: "serving.kserve.io/v1beta1"
+kind: "InferenceService"
+metadata:
+  annotations:
+    # autoscaling.knative.dev/target: '1'
+    # openshift.io/display-name: fraud
+    # serving.knative.openshift.io/enablePassthrough: 'true'
+    # sidecar.istio.io/inject: 'true'
+    # sidecar.istio.io/rewriteAppHTTPProbers: 'true'
+    serving.kserve.io/deploymentMode: RawDeployment
+  name: fraud2
+  namespace: robert-project
+  finalizers:
+    - inferenceservice.finalizers
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  transformer:
+    containers:
+      - args:
+          - '--feast_serving_url'
+          - 'feature-server-service.default.svc.cluster.local:6566'
+          - '--entity_id_name'
+          - driver_id
+          - '--feature_refs'
+          - 'driver_hourly_stats:acc_rate'
+          - 'driver_hourly_stats:avg_daily_trips'
+          - 'driver_hourly_stats:conv_rate'
+        command:
+          - python
+          - '-m'
+          - fraud_transformer
+        image: 'quay.io/rlundber/fraud-transformer:0.10'
+        name: kserve-container
+        resources:
+          limits:
+            cpu: '1'
+            memory: 2Gi
+          requests:
+            cpu: '1'
+            memory: 2Gi
+  predictor:
+    model:
+      modelFormat:
+        name: onnx
+        version: '1'
+      name: ''
+      resources:
+        limits:
+          cpu: '3'
+          memory: 8Gi
+        requests:
+          cpu: '1'
+          memory: 4Gi
+      runtime: fraud2
+      storage:
+        key: aws-connection-general
+        path: models/fraud
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/accelerator-name: ''
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/template-display-name: OpenVINO Model Server
+    opendatahub.io/template-name: kserve-ovms
+    openshift.io/display-name: fraud2
+  name: fraud2
+  namespace: robert-project
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8888'
+  containers:
+    - args:
+        - '--model_name={{.Name}}'
+        - '--port=8001'
+        - '--rest_port=8888'
+        - '--model_path=/mnt/models'
+        - '--file_system_poll_wait_seconds=0'
+        - '--grpc_bind_address=0.0.0.0'
+        - '--rest_bind_address=0.0.0.0'
+        - '--target_device=AUTO'
+        - '--metrics_enable'
+      image: 'quay.io/modh/openvino_model_server@sha256:6c7795279f9075bebfcd9aecbb4a4ce4177eec41fb3f3e1f1079ce6309b7ae45'
+      name: kserve-container
+      ports:
+        - containerPort: 8888
+          protocol: TCP
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: shm
+  multiModel: false
+  protocolVersions:
+    - v2
+    - grpc-v2
+  supportedModelFormats:
+    - autoSelect: true
+      name: openvino_ir
+      version: opset13
+    - name: onnx
+      version: '1'
+    - autoSelect: true
+      name: tensorflow
+      version: '1'
+    - autoSelect: true
+      name: tensorflow
+      version: '2'
+    - autoSelect: true
+      name: paddle
+      version: '2'
+    - autoSelect: true
+      name: pytorch
+      version: '2'
+  volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 2Gi
+      name: shm
